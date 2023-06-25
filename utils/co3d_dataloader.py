@@ -22,12 +22,14 @@ import torchvision.transforms.functional as TF
 from pytorch3d.implicitron.dataset import types
 from pytorch3d.implicitron.dataset.dataset_base import DatasetBase
 from pytorch3d.implicitron.dataset.json_index_dataset import (
-    FrameAnnotsEntry, _bbox_xywh_to_xyxy, _bbox_xyxy_to_xywh,
-    _clamp_box_to_image_bounds_and_round, _crop_around_box, _get_1d_bounds,
-    _get_bbox_from_mask, _get_clamp_bbox, _load_1bit_png_mask,
-    _load_16big_png_depth, _load_depth, _load_depth_mask, _load_image,
-    _load_mask, _load_pointcloud, _rescale_bbox, _safe_as_tensor,
-    _seq_name_to_seed)
+    FrameAnnotsEntry, _seq_name_to_seed)
+
+from pytorch3d.implicitron.dataset.utils import (bbox_xywh_to_xyxy, bbox_xyxy_to_xywh,
+    clamp_box_to_image_bounds_and_round, crop_around_box, 
+    get_bbox_from_mask, get_clamp_bbox, 
+    load_depth, load_depth_mask, load_image,
+    load_mask, load_pointcloud, rescale_bbox, safe_as_tensor)
+
 from pytorch3d.implicitron.dataset.json_index_dataset_map_provider_v2 import get_available_subset_names
 from pytorch3d.renderer.cameras import PerspectiveCameras
 
@@ -410,15 +412,15 @@ class CO3Dv2Wrapper(torch.utils.data.Dataset):
         # pyre-ignore[16]
         point_cloud = self.seq_annots[entry.sequence_name].point_cloud
         frame_data = FrameData(
-            frame_number=_safe_as_tensor(entry.frame_number, torch.long),
-            frame_timestamp=_safe_as_tensor(entry.frame_timestamp, torch.float),
+            frame_number=safe_as_tensor(entry.frame_number, torch.long),
+            frame_timestamp=safe_as_tensor(entry.frame_timestamp, torch.float),
             sequence_name=entry.sequence_name,
             sequence_category=self.seq_annots[entry.sequence_name].category,
-            camera_quality_score=_safe_as_tensor(
+            camera_quality_score=safe_as_tensor(
                 self.seq_annots[entry.sequence_name].viewpoint_quality_score,
                 torch.float,
             ),
-            point_cloud_quality_score=_safe_as_tensor(
+            point_cloud_quality_score=safe_as_tensor(
                 point_cloud.quality_score, torch.float
             )
             if point_cloud is not None
@@ -439,7 +441,7 @@ class CO3Dv2Wrapper(torch.utils.data.Dataset):
         scale = 1.0
         if self.load_images and entry.image is not None:
             # original image size
-            frame_data.image_size_hw = _safe_as_tensor(entry.image.size, torch.long)
+            frame_data.image_size_hw = safe_as_tensor(entry.image.size, torch.long)
 
             (
                 frame_data.image_rgb,
@@ -455,7 +457,7 @@ class CO3Dv2Wrapper(torch.utils.data.Dataset):
         #! INSERT
         if self.deprecated_val_region:
             # print(frame_data.crop_bbox_xywh)
-            valid_bbox = _bbox_xywh_to_xyxy(frame_data.crop_bbox_xywh).float()
+            valid_bbox = bbox_xywh_to_xyxy(frame_data.crop_bbox_xywh).float()
             # print(valid_bbox, frame_data.image_size_hw)
             valid_bbox[0] = torch.clip((valid_bbox[0] - torch.div(frame_data.image_size_hw[1],2,rounding_mode='floor'))/torch.div(frame_data.image_size_hw[1],2,rounding_mode='floor'), -1.0, 1.0)
             valid_bbox[1] = torch.clip((valid_bbox[1] - torch.div(frame_data.image_size_hw[0],2,rounding_mode='floor'))/torch.div(frame_data.image_size_hw[0],2,rounding_mode='floor'), -1.0, 1.0)
@@ -495,7 +497,7 @@ class CO3Dv2Wrapper(torch.utils.data.Dataset):
                 frame_data.depth_map,
                 frame_data.depth_path,
                 frame_data.depth_mask,
-            ) = self._load_mask_depth(entry, clamp_bbox_xyxy, frame_data.fg_probability)
+            ) = self.load_mask_depth(entry, clamp_bbox_xyxy, frame_data.fg_probability)
 
         if entry.viewpoint is not None:
             frame_data.camera = self._get_pytorch3d_camera(
@@ -508,7 +510,7 @@ class CO3Dv2Wrapper(torch.utils.data.Dataset):
             frame_data.sequence_point_cloud_path = pcl_path = os.path.join(
                 self.dataset_root, point_cloud.path
             )
-            frame_data.sequence_point_cloud = _load_pointcloud(
+            frame_data.sequence_point_cloud = load_pointcloud(
                 self._local_path(pcl_path), max_points=self.max_points
             )
 
@@ -547,27 +549,27 @@ class CO3Dv2Wrapper(torch.utils.data.Dataset):
 
         if (self.load_masks or self.box_crop) and entry.mask is not None:
             full_path = os.path.join(self.dataset_root, entry.mask.path)
-            mask = _load_mask(self._local_path(full_path))
+            mask = load_mask(self._local_path(full_path))
 
             if mask.shape[-2:] != entry.image.size:
                 raise ValueError(
                     f"bad mask size: {mask.shape[-2:]} vs {entry.image.size}!"
                 )
 
-            bbox_xywh = torch.tensor(_get_bbox_from_mask(mask, self.box_crop_mask_thr))
+            bbox_xywh = torch.tensor(get_bbox_from_mask(mask, self.box_crop_mask_thr))
 
             if self.box_crop:
-                clamp_bbox_xyxy = _clamp_box_to_image_bounds_and_round(
-                    _get_clamp_bbox(
+                clamp_bbox_xyxy = clamp_box_to_image_bounds_and_round(
+                    get_clamp_bbox(
                         bbox_xywh,
                         image_path=entry.image.path,
                         box_crop_context=self.box_crop_context,
                     ),
                     image_size_hw=tuple(mask.shape[-2:]),
                 )
-                crop_box_xywh = _bbox_xyxy_to_xywh(clamp_bbox_xyxy)
+                crop_box_xywh = bbox_xyxy_to_xywh(clamp_bbox_xyxy)
 
-                mask = _crop_around_box(mask, clamp_bbox_xyxy, full_path)
+                mask = crop_around_box(mask, clamp_bbox_xyxy, full_path)
 
             fg_probability, _, _ = self._resize_image(mask, mode="nearest")
 
@@ -581,7 +583,7 @@ class CO3Dv2Wrapper(torch.utils.data.Dataset):
     ) -> Tuple[torch.Tensor, str, torch.Tensor, float]:
         assert self.dataset_root is not None and entry.image is not None
         path = os.path.join(self.dataset_root, entry.image.path)
-        image_rgb = _load_image(self._local_path(path))
+        image_rgb = load_image(self._local_path(path))
 
         if image_rgb.shape[-2:] != entry.image.size:
             raise ValueError(
@@ -590,7 +592,7 @@ class CO3Dv2Wrapper(torch.utils.data.Dataset):
 
         if self.box_crop:
             assert clamp_bbox_xyxy is not None
-            image_rgb = _crop_around_box(image_rgb, clamp_bbox_xyxy, path)
+            image_rgb = crop_around_box(image_rgb, clamp_bbox_xyxy, path)
 
         image_rgb, scale, mask_crop = self._resize_image(image_rgb)
 
@@ -609,14 +611,14 @@ class CO3Dv2Wrapper(torch.utils.data.Dataset):
         entry_depth = entry.depth
         assert entry_depth is not None
         path = os.path.join(self.dataset_root, entry_depth.path)
-        depth_map = _load_depth(self._local_path(path), entry_depth.scale_adjustment)
+        depth_map = load_depth(self._local_path(path), entry_depth.scale_adjustment)
 
         if self.box_crop:
             assert clamp_bbox_xyxy is not None
-            depth_bbox_xyxy = _rescale_bbox(
+            depth_bbox_xyxy = rescale_bbox(
                 clamp_bbox_xyxy, entry.image.size, depth_map.shape[-2:]
             )
-            depth_map = _crop_around_box(depth_map, depth_bbox_xyxy, path)
+            depth_map = crop_around_box(depth_map, depth_bbox_xyxy, path)
 
         depth_map, _, _ = self._resize_image(depth_map, mode="nearest")
 
@@ -627,14 +629,14 @@ class CO3Dv2Wrapper(torch.utils.data.Dataset):
         if self.load_depth_masks:
             assert entry_depth.mask_path is not None
             mask_path = os.path.join(self.dataset_root, entry_depth.mask_path)
-            depth_mask = _load_depth_mask(self._local_path(mask_path))
+            depth_mask = load_depth_mask(self._local_path(mask_path))
 
             if self.box_crop:
                 assert clamp_bbox_xyxy is not None
-                depth_mask_bbox_xyxy = _rescale_bbox(
+                depth_mask_bbox_xyxy = rescale_bbox(
                     clamp_bbox_xyxy, entry.image.size, depth_mask.shape[-2:]
                 )
-                depth_mask = _crop_around_box(
+                depth_mask = crop_around_box(
                     depth_mask, depth_mask_bbox_xyxy, mask_path
                 )
 
