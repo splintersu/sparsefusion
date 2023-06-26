@@ -273,7 +273,9 @@ def train(gpu, args):
     optimizer = torch.optim.Adam(diffusion.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50000, gamma=0.5)
     diffusion = nn.parallel.DistributedDataParallel(diffusion, device_ids=[gpu], find_unused_parameters=True)
-
+    if args.train_diffusion:
+        print('training diffusion')
+    
     if args.train_eft:
         print('training eft')
         optimizer_nerf = torch.optim.Adam(eft.parameters(), lr=lr)
@@ -415,7 +417,9 @@ def train(gpu, args):
                     color_loss = color_loss.abs().mean()
 
                 #! DIFFUSION ERROR
-                d_loss = diffusion(diffusion_input, cond_images=diffusion_cond_image, loss_mask=batch_mask)
+                d_loss = 0
+                if args.train_diffusion:
+                    d_loss = diffusion(diffusion_input, cond_images=diffusion_cond_image, loss_mask=batch_mask)
 
                 #! LOSS TERM
                 loss = d_loss + color_loss
@@ -432,8 +436,9 @@ def train(gpu, args):
                     return
                 
                 #! OPTIM STEP
-                optimizer.step()
-                scheduler.step()
+                if args.train_diffusion:
+                    optimizer.step()
+                    scheduler.step()
                 if args.train_eft:
                     optimizer_nerf.step()
                     scheduler_nerf.step()
@@ -553,7 +558,7 @@ def main():
                         help='last digit of port (default: 1234[1])')
     parser.add_argument('-c', '--category', type=str, metavar='s', required=True,
                         help='category')
-    parser.add_argument('-r', '--root', type=str, default='/grogu/datasets/co3d/', metavar='s',
+    parser.add_argument('-r', '--root', type=str, default='/home/ubuntu/sparsefusion/data/co3d', metavar='s',
                         help='location of test features')
     parser.add_argument('-d', '--dataset_name', type=str, default='co3d', metavar='s',
                         help='dataset name')
@@ -621,6 +626,12 @@ def main():
         args.train_eft = True               # jointly train EFT (eft)
         if args.train_eft:
             print('joint eft training')
+            
+        args.train_diffusion = False # whether to train diffusion
+        if args.train_diffusion:
+            print('train diffusion')
+        else:
+            print('no train diffusion')
         
 
     # Modification below not recommended 
