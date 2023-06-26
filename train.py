@@ -68,12 +68,15 @@ def save_visualization(
             epipolar_features.split([3, 256], dim=-1)
         )
 
-        epipolar_latents = rearrange(epipolar_latents, 'b h w f -> b f h w')
-        rand = torch.randn_like(z)
-        diffusion_z = diffusion.module.sample(cond_images=epipolar_latents, batch_size=1)
-        diffusion_z = 1.0 / args.z_scale_factor * diffusion_z
-        diffusion_image = unnormalize(vae.decode(diffusion_z)).clip(0.0, 1.0)
-        diffusion_image = rearrange(diffusion_image, 'b c h w -> b h w c')
+        if args.use_diffusion:
+            epipolar_latents = rearrange(epipolar_latents, 'b h w f -> b f h w')
+            rand = torch.randn_like(z)
+            diffusion_z = diffusion.module.sample(cond_images=epipolar_latents, batch_size=1)
+            diffusion_z = 1.0 / args.z_scale_factor * diffusion_z
+            diffusion_image = unnormalize(vae.decode(diffusion_z)).clip(0.0, 1.0)
+            diffusion_image = rearrange(diffusion_image, 'b c h w -> b h w c')
+        else:
+            diffusion_image = torch.zeros_like(rendered_image)
 
     num_input = len(input_rgb)
     # Generate plots.
@@ -427,13 +430,14 @@ def train(gpu, args):
 
                 #! BACKWARD
                 #! CATCH SOME ERRORS
-                try:
-                    loss.backward()
-                    skip_save = False
-                except RuntimeError:
-                    print('RUNTIME ERROR')
-                    print(data['idx'])
-                    return
+                if args.train_diffusion or args.train_eft:
+                    try:
+                        loss.backward()
+                        skip_save = False
+                    except RuntimeError:
+                        print('RUNTIME ERROR')
+                        print(data['idx'])
+                        return
                 
                 #! OPTIM STEP
                 if args.train_diffusion:
@@ -446,8 +450,12 @@ def train(gpu, args):
                 if gpu == 0:
                     step += 1
                     pbar.update(1)
-                    pbar.set_description(f'epoch={ep}/{max_epoch} lr={float(scheduler.get_last_lr()[0]):1.2e} loss={loss.item():02f}')
-                    running_loss += loss.item()
+                    
+                    if args.train_diffusion or args.train_eft:
+                        pbar.set_description(f'epoch={ep}/{max_epoch} lr={float(scheduler.get_last_lr()[0]):1.2e} loss={loss.item():02f}')
+                        running_loss += loss.item()
+                    else:
+                        running_loss += 0.0
 
                     #! UPDATE LR AND LOG LOSS
                     if step % 50 == 0:
@@ -566,6 +574,8 @@ def main():
                         help='nccl')
     parser.add_argument('-a', '--vae', type=str, default='checkpoints/sd/sd-v1-3-vae.ckpt', metavar='S',
                         help='vae ckpt')
+    parser.add_argument('-m', '--model', type=str, default='', help='force load model from path')
+    parser.add_argument('-e', '--eval', default=False, action='store_true', help='eval only mode')
     args = parser.parse_args()
     args.world_size = args.gpus * args.nodes
     os.environ['MASTER_ADDR'] = 'localhost'
@@ -602,16 +612,6 @@ def main():
         #! ABOVE: TODO 
         #! ####################################################################
 
-        #@ AUTOMATIC RESUME
-        #! WARNING: CURRENTLY DOES NOT RESUME OPTIMIZER
-        if os.path.exists(f'{args.exp_dir}/ckpt_latest_eft.pt'):
-            print('***automatically resuming***')
-            args.ckpt_path = f'{args.exp_dir}/ckpt_latest_eft.pt'
-            args.ckpt_path_diffusion = f'{args.exp_dir}/ckpt_latest.pt'
-        else:
-            print('***training from scratch***')
-            args.ckpt_path = None # or default pretrained
-            args.ckpt_path_diffusion = None # or default pretrained
 
         #@ SET PARAMETERS
         args.timesteps = 500                # default diffusion steps (500)
@@ -632,7 +632,34 @@ def main():
             print('train diffusion')
         else:
             print('no train diffusion')
+            
+        args.use_diffusion = False # whether to use diffusion in output
         
+    #@ AUTOMATIC RESUME
+    #! WARNING: CURRENTLY DOES NOT RESUME OPTIMIZER
+    if args.model != '':
+        assert os.path.exists(f'{args.model}/ckpt_latest_eft.pt'), f'invalid argument args.model={args.model}'
+        print(f'***automatically resuming from {args.model} ***')
+        args.ckpt_path = f'{args.model}/ckpt_latest_eft.pt'
+        args.ckpt_path_diffusion = f'{args.model}/ckpt_latest.pt'
+    else:
+        if os.path.exists(f'{args.exp_dir}/ckpt_latest_eft.pt'):
+            print(f'***automatically resuming from {args.exp_dir} ***')
+            args.ckpt_path = f'{args.exp_dir}/ckpt_latest_eft.pt'
+            args.ckpt_path_diffusion = f'{args.exp_dir}/ckpt_latest.pt'
+        else:
+            print('***training from scratch***')
+            args.ckpt_path = None # or default pretrained
+            args.ckpt_path_diffusion = None # or default pretrained
+
+    if args.eval:
+        args.train_diffusion = False
+        args.train_eft = False
+        args.vis_itr = 1
+        args.max_epoch = 1
+        args.repeat = 1
+        
+        args.use_diffusion = False
 
     # Modification below not recommended 
     args.use_r = True
